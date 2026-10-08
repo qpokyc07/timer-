@@ -1,0 +1,2401 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0a1f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Таймеры услуг</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  /* ==========================================================
+     ОПТИМИЗАЦИЯ ПОД СЛАБЫЕ ПЛАНШЕТЫ (2 ГБ RAM):
+     - убран filter: blur(90px) по 420px (самый дорогой эффект)
+     - убрана анимация фонового градиента на весь экран
+     - убраны все backdrop-filter (снимок фона на каждый элемент)
+     - убраны SVG drop-shadow фильтры
+     - анимации только transform/opacity (GPU, без перерисовки)
+     - режим .lite и prefers-reduced-motion отключают остальное
+     ========================================================== */
+
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  :root {
+    --bg-1: #0a0a1f;
+    --bg-2: #1a1a3e;
+    --bg-3: #0f0f2a;
+    --text: #fff;
+    --text-muted: #94a3b8;
+    --card-bg: rgba(255,255,255,0.055);
+    --card-border: rgba(255,255,255,0.1);
+    --stat-bg: rgba(255,255,255,0.07);
+    --shadow: 0 4px 14px rgba(0,0,0,0.32);
+  }
+
+  body.light {
+    --bg-1: #eef2ff;
+    --bg-2: #dbeafe;
+    --bg-3: #c7d2fe;
+    --text: #1e293b;
+    --text-muted: #64748b;
+    --card-bg: rgba(255,255,255,0.72);
+    --card-border: rgba(0,0,0,0.08);
+    --stat-bg: rgba(255,255,255,0.78);
+    --shadow: 0 4px 14px rgba(100,116,139,0.18);
+  }
+
+  body {
+    /* статичный градиент — без анимации background-position */
+    background: linear-gradient(160deg, var(--bg-1) 0%, var(--bg-2) 55%, var(--bg-3) 100%);
+    color: var(--text);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    transition: color .3s;
+  }
+
+  /* Мягкое свечение вместо filter:blur + анимация (рисуется один раз) */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(460px 460px at 6% -4%, rgba(99,102,241,.30), transparent 70%),
+      radial-gradient(500px 500px at 104% 104%, rgba(34,211,238,.22), transparent 70%);
+  }
+  body.light::before {
+    background:
+      radial-gradient(460px 460px at 6% -4%, rgba(129,140,248,.35), transparent 70%),
+      radial-gradient(500px 500px at 104% 104%, rgba(56,189,248,.30), transparent 70%);
+  }
+
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 3;
+    flex-wrap: wrap;
+  }
+
+  h1 {
+    font-size: 1.3em;
+    background: linear-gradient(90deg, #22d3ee, #a78bfa, #f472b6, #22d3ee);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 2px;
+    animation: titleFlow 7s linear infinite;
+    white-space: nowrap;
+  }
+  @keyframes titleFlow {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 300% 50%; }
+  }
+
+  .top-actions { display: flex; gap: 6px; align-items: center; }
+
+  .icon-btn {
+    background: var(--stat-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text);
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 1em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color .2s, transform .2s;
+  }
+  .icon-btn:active { transform: scale(.9); }
+  .icon-btn.on { background: linear-gradient(135deg, #22d3ee, #a78bfa); border-color: transparent; }
+
+  @media (hover: hover) {
+    .icon-btn:hover { background: rgba(34,211,238,.2); }
+  }
+
+  .rows {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  .row {
+    display: grid;
+    gap: 8px;
+    min-height: 0;
+    position: relative;
+  }
+
+  .row-vr { flex: 1; grid-template-columns: repeat(6, 1fr); }
+  .row-bottom { flex: 1; grid-template-columns: repeat(6, 1fr); }
+
+  .row-progress {
+    position: absolute;
+    top: -4px;
+    left: 0; right: 0;
+    height: 2px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 2px;
+    overflow: hidden;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity .4s;
+  }
+  .row.has-active .row-progress { opacity: 1; }
+
+  .row-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #34d399, #22d3ee, #a78bfa);
+    border-radius: 2px;
+  }
+
+  .timer-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 8px 10px;
+    box-shadow: var(--shadow);
+    transition: box-shadow .3s, border-color .3s, opacity .4s;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    animation: cardIn .5s cubic-bezier(.34,1.56,.64,1) backwards;
+  }
+
+  /* свечение предупреждения/финиша — анимируется opacity, а не box-shadow */
+  .timer-card::after,
+  .sim-half::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    box-shadow: 0 0 22px rgba(251,191,36,.55);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .timer-card.warning::after,
+  .timer-card.paused::after { opacity: .4; animation: glowPulse 1.6s ease-in-out infinite; }
+  .timer-card.finished::after { box-shadow: 0 0 24px rgba(244,63,94,.65); opacity: 1; animation: glowOut 1s ease-out 1 forwards; }
+  .sim-half.warning::after { opacity: .4; animation: glowPulse 1.6s ease-in-out infinite; }
+
+  @keyframes glowPulse { 0%,100% { opacity: .2; } 50% { opacity: .7; } }
+  @keyframes glowOut { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+  .timer-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    border-radius: 14px 14px 0 0;
+    background: linear-gradient(90deg, #22d3ee, #a78bfa, #22d3ee);
+    background-size: 200% 100%;
+  }
+
+  body.idle-mode .timer-card:not(.active):not(.finished):not(.paused):not(.warning) { opacity: .45; }
+
+  @media (hover: hover) {
+    .timer-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.42); }
+  }
+
+  .timer-card.active {
+    border-color: rgba(34,211,238,0.5);
+    box-shadow: 0 4px 20px rgba(34,211,238,0.3);
+  }
+  .timer-card.active::before { animation: lineFlow 2.5s linear infinite; }
+  @keyframes lineFlow { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
+
+  .timer-card.paused { border-color: rgba(251,191,36,.65); box-shadow: 0 4px 18px rgba(251,191,36,.25); }
+  .timer-card.paused::before { background: linear-gradient(90deg, #fbbf24, #f59e0b, #fbbf24); animation: lineFlow 3s linear infinite; }
+  .timer-card.paused .time-display { color: #fbbf24; text-shadow: 0 0 14px rgba(251,191,36,.55); }
+
+  .timer-card.warning { border-color: rgba(251,191,36,.8); box-shadow: 0 0 20px rgba(251,191,36,.35); }
+  .timer-card.warning .time-display { color: #fbbf24; text-shadow: 0 0 16px rgba(251,191,36,.8); }
+
+  .timer-card.finished { border-color: rgba(244,63,94,.9); animation: finishShake .7s cubic-bezier(.36,.07,.19,.97) 1; }
+  .timer-card.finished::before { background: linear-gradient(90deg, #f43f5e, #fb923c, #f43f5e); animation: lineFlow .8s linear infinite; }
+  .timer-card.finished .time-display { animation: finishBlink .7s ease-in-out infinite; }
+  @keyframes finishShake {
+    0%,100% { transform: translateX(0); }
+    15% { transform: translateX(-5px); }
+    30% { transform: translateX(5px); }
+    45% { transform: translateX(-4px); }
+    60% { transform: translateX(4px); }
+    80% { transform: translateX(-2px); }
+  }
+  @keyframes finishBlink { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+
+  /* ---------- варианты оформления VR ---------- */
+  .vr-white {
+    background: linear-gradient(160deg, rgba(255,255,255,0.96), rgba(241,245,249,0.92));
+    border-color: rgba(255,255,255,0.7);
+    color: #0f172a;
+    box-shadow: 0 5px 16px rgba(255,255,255,0.16);
+  }
+  .vr-white::before { background: linear-gradient(90deg, #ffffff, #cbd5e1, #ffffff); }
+  .vr-white .card-name { color: #334155; }
+  .vr-white .time-display { color: #0f172a; text-shadow: none; }
+  .vr-white .client-name { color: #64748b; background: rgba(15,23,42,0.04); border-color: rgba(15,23,42,0.18); }
+  .vr-white .client-name.filled { color: #4f46e5; background: rgba(79,70,229,0.08); border-color: rgba(79,70,229,0.35); }
+  .vr-white .btn-time { background: linear-gradient(180deg, #818cf8 0%, #6366f1 45%, #7c3aed 100%); --lip: #4c1d95; color: #fff; }
+  .vr-white .extend-row.show { border-color: rgba(217,119,6,0.5); background: rgba(248,250,252,0.96); }
+  .vr-white .btn.btn-extend-mini { background: rgba(245,158,11,0.15); color: #b45309; border-color: #d97706; --lip: #fcd34d; }
+  .vr-white .ring-track { stroke: rgba(15,23,42,0.08); }
+  .vr-white .progress-bar { background: rgba(15,23,42,0.08); }
+
+  .vr-graphite {
+    background: linear-gradient(160deg, #1e293b, #334155);
+    border-color: rgba(148,163,184,0.4);
+    box-shadow: 0 5px 16px rgba(15,23,42,0.5);
+  }
+  .vr-graphite::before { background: linear-gradient(90deg, #64748b, #94a3b8, #64748b); }
+  .vr-graphite .card-name { color: #cbd5e1; }
+  .vr-graphite .time-display { color: #f1f5f9; text-shadow: 0 0 12px rgba(148,163,184,0.45); }
+
+  .vr-sky {
+    background: linear-gradient(160deg, #0284c7, #38bdf8);
+    border-color: rgba(125,211,252,0.6);
+    box-shadow: 0 5px 18px rgba(56,189,248,0.32);
+  }
+  .vr-sky::before { background: linear-gradient(90deg, #7dd3fc, #38bdf8, #7dd3fc); }
+  .vr-sky .card-name { color: #e0f2fe; }
+  .vr-sky .time-display { color: #f0f9ff; text-shadow: 0 0 14px rgba(125,211,252,0.7); }
+
+  .vr-amber {
+    background: linear-gradient(160deg, #b45309, #f59e0b);
+    border-color: rgba(252,211,77,0.6);
+    box-shadow: 0 5px 18px rgba(245,158,11,0.32);
+  }
+  .vr-amber::before { background: linear-gradient(90deg, #fcd34d, #f59e0b, #fcd34d); }
+  .vr-amber .card-name { color: #fef3c7; }
+  .vr-amber .time-display { color: #fffbeb; text-shadow: 0 0 14px rgba(252,211,77,0.7); }
+
+  .vr-rose {
+    background: linear-gradient(160deg, #be123c, #f43f5e);
+    border-color: rgba(251,113,133,0.6);
+    box-shadow: 0 5px 18px rgba(244,63,94,0.32);
+  }
+  .vr-rose::before { background: linear-gradient(90deg, #fda4af, #f43f5e, #fda4af); }
+  .vr-rose .card-name { color: #ffe4e6; }
+  .vr-rose .time-display { color: #fff1f2; text-shadow: 0 0 14px rgba(251,113,133,0.7); }
+
+  .vr-violet {
+    background: linear-gradient(160deg, #6d28d9, #a78bfa);
+    border-color: rgba(196,181,253,0.6);
+    box-shadow: 0 5px 18px rgba(167,139,250,0.32);
+  }
+  .vr-violet::before { background: linear-gradient(90deg, #c4b5fd, #a78bfa, #c4b5fd); }
+  .vr-violet .card-name { color: #ede9fe; }
+  .vr-violet .time-display { color: #f5f3ff; text-shadow: 0 0 14px rgba(196,181,253,0.7); }
+
+  /* ---------- шапка карточки ---------- */
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2px;
+    flex-shrink: 0;
+    gap: 4px;
+  }
+
+  .card-name {
+    font-size: .72em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    cursor: pointer;
+    border-radius: 5px;
+    padding: 2px 5px;
+  }
+
+  .client-name {
+    font-size: .72em;
+    color: var(--text-muted);
+    font-weight: 500;
+    letter-spacing: .3px;
+    margin: 3px 0 4px;
+    min-height: 18px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 7px;
+    font-style: italic;
+    background: rgba(255,255,255,0.05);
+    border: 1px dashed rgba(255,255,255,0.18);
+    width: 100%;
+    display: block;
+  }
+  .client-name.filled {
+    color: #22d3ee;
+    font-style: normal;
+    font-weight: 600;
+    background: rgba(34,211,238,0.1);
+    border: 1px solid rgba(34,211,238,0.35);
+  }
+  .vr-white .client-name { color: #64748b; background: rgba(15,23,42,0.04); border-color: rgba(15,23,42,0.15); }
+  .vr-white .client-name.filled { color: #4f46e5; background: rgba(79,70,229,0.08); border-color: rgba(79,70,229,0.35); }
+
+  .progress-bar {
+    width: 100%;
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 1px 0 3px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity .3s;
+  }
+  .timer-card.active .progress-bar,
+  .timer-card.paused .progress-bar,
+  .timer-card.finished .progress-bar,
+  .timer-card.warning .progress-bar,
+  .sim-half.active .progress-bar,
+  .sim-half.paused .progress-bar,
+  .sim-half.finished .progress-bar,
+  .sim-half.warning .progress-bar { opacity: 1; }
+
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #34d399, #22d3ee);
+    border-radius: 3px;
+    transition: width 1s linear;
+  }
+  .timer-card.paused .progress-fill,
+  .timer-card.warning .progress-fill,
+  .sim-half.paused .progress-fill,
+  .sim-half.warning .progress-fill { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+  .timer-card.finished .progress-fill,
+  .sim-half.finished .progress-fill { background: linear-gradient(90deg, #f43f5e, #fb923c); width: 100% !important; }
+
+  /* Кольцо: фиксированный квадрат. Иначе SVG с height:100% внутри области
+     с неопределённой высотой раздувается до 100px и ломает вёрстку.
+     Размер задаётся на карточке (--ring) и наследуется кольцом. */
+  .timer-card { --ring: clamp(44px, 8vh, 82px); }
+
+  .ring-wrap {
+    position: relative;
+    width: var(--ring);
+    height: var(--ring);
+    margin: 3px 0;
+    flex-shrink: 0;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .ring-svg {
+    position: absolute;
+    inset: 0;
+    width: var(--ring);
+    height: var(--ring);
+    transform: rotate(-90deg);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .4s;
+  }
+  .timer-card.active .ring-svg,
+  .timer-card.paused .ring-svg,
+  .timer-card.finished .ring-svg,
+  .timer-card.warning .ring-svg,
+  .sim-half.active .ring-svg,
+  .sim-half.paused .ring-svg,
+  .sim-half.finished .ring-svg,
+  .sim-half.warning .ring-svg { opacity: 1; }
+
+  .ring-track { fill: none; stroke: rgba(255,255,255,0.08); stroke-width: 3; }
+
+  /* без filter: drop-shadow — SVG-фильтры очень дорогие для GPU */
+  .ring-progress {
+    fill: none;
+    stroke: #34d399;
+    stroke-width: 3;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 1s linear, stroke .3s;
+  }
+  .timer-card.warning .ring-progress,
+  .sim-half.warning .ring-progress { stroke: #fbbf24; }
+  .timer-card.finished .ring-progress,
+  .sim-half.finished .ring-progress { stroke: #f43f5e; }
+  .timer-card.paused .ring-progress,
+  .sim-half.paused .ring-progress { stroke: #fbbf24; }
+
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #6b7280;
+    flex-shrink: 0;
+  }
+  .status-dot.active { background: #34d399; box-shadow: 0 0 8px #34d399; animation: dotPulse 1.6s ease-in-out infinite; }
+  .status-dot.paused { background: #fbbf24; box-shadow: 0 0 8px #fbbf24; animation: dotPulse 2.2s ease-in-out infinite; }
+  .status-dot.warning { background: #fbbf24; box-shadow: 0 0 10px #fbbf24; animation: dotPulse .9s ease-in-out infinite; }
+  .status-dot.finished { background: #fff; box-shadow: 0 0 12px #fff; animation: dotBlink .8s ease-in-out infinite; }
+
+  /* только transform — без перерисовки */
+  @keyframes dotPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.35); } }
+  @keyframes dotBlink { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .25; transform: scale(1.5); } }
+
+  .time-display {
+    font-size: clamp(1.3em, 3vw, 2.4em);
+    font-weight: 700;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 1px;
+    flex-shrink: 0;
+    transition: color .3s;
+    line-height: 1.1;
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .timer-card.active .time-display { animation: timeGlow 2.6s ease-in-out infinite; }
+  @keyframes timeGlow { 0%,100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+
+  /* ---------- кнопки пауза/плей ---------- */
+  .playback-box {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin: 8px 0 5px;
+    flex-shrink: 0;
+  }
+
+  .pb-btn {
+    flex: 1;
+    position: relative;
+    border: none;
+    border-radius: 12px;
+    font-size: .95em;
+    font-weight: 800;
+    padding: 10px 6px;
+    cursor: pointer;
+    transition: transform .18s, filter .18s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    letter-spacing: .6px;
+    color: #fff;
+    text-transform: uppercase;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.35);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.25);
+    /* текстуры объединены в один background-image — меньше элементов для отрисовки */
+    background-image:
+      radial-gradient(circle at 50% 0%, rgba(255,255,255,0.32), transparent 65%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,0.13) 0 6px, rgba(255,255,255,0) 6px 14px);
+  }
+
+  .pb-btn .pb-icon { font-size: 1.35em; line-height: 1; transition: transform .2s; }
+  .pb-btn .pb-label { font-size: .68em; font-weight: 800; letter-spacing: .8px; opacity: .95; }
+
+  .pb-pause {
+    background-color: #f59e0b;
+    background-image:
+      radial-gradient(circle at 50% 0%, rgba(255,255,255,0.32), transparent 65%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,0.13) 0 6px, rgba(255,255,255,0) 6px 14px),
+      linear-gradient(155deg, #fbbf24 0%, #f59e0b 45%, #d97706 100%);
+  }
+  .pb-play {
+    background-color: #10b981;
+    background-image:
+      radial-gradient(circle at 50% 0%, rgba(255,255,255,0.32), transparent 65%),
+      repeating-linear-gradient(45deg, rgba(255,255,255,0.13) 0 6px, rgba(255,255,255,0) 6px 14px),
+      linear-gradient(155deg, #34d399 0%, #10b981 45%, #059669 100%);
+  }
+
+  .pb-btn:active:not(.pb-disabled) { transform: scale(.95); }
+
+  .pb-btn.pb-disabled {
+    filter: grayscale(1) brightness(.45);
+    opacity: .5;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .vr-white .pb-btn.pb-disabled { filter: grayscale(1) brightness(.8); opacity: .4; }
+
+  /* ---------- нижние кнопки ---------- */
+  .buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    justify-content: center;
+    margin-top: auto;
+    flex-shrink: 0;
+  }
+
+  /* ---------- нижние кнопки: крупные и объёмные ----------
+     Объём дают: блик сверху (inset), тёмная «губа» снизу (inset) и
+     сплошная тень-кромка того же цвета под кнопкой (0 3px 0 var(--lip)).
+     Размер задан в cqw — кнопки подстраиваются под ширину карточки,
+     поэтому ряд из 5 штук всегда помещается в одну строку. */
+  .timer-card, .sim-half { container-type: inline-size; }
+
+  .btn {
+    --lip: rgba(0,0,0,.35);
+    border: none;
+    border-radius: 9px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: transform .1s, box-shadow .1s, filter .15s;
+    letter-spacing: .3px;
+    white-space: nowrap;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,.4);
+    box-shadow:
+      inset 0 1.5px 0 rgba(255,255,255,.5),
+      inset 0 -2px 0 rgba(0,0,0,.22),
+      0 3px 0 var(--lip),
+      0 5px 12px rgba(0,0,0,.35);
+  }
+  /* нажатие: кнопка «уходит» вниз, губа проваливается внутрь */
+  .btn:active {
+    transform: translateY(3px);
+    box-shadow:
+      inset 0 2px 5px rgba(0,0,0,.4),
+      inset 0 -1px 0 rgba(255,255,255,.18),
+      0 0 0 var(--lip);
+  }
+  @media (hover: hover) { .btn:hover { filter: brightness(1.12); } }
+
+  .btn-time {
+    background: linear-gradient(180deg, #818cf8 0%, #6366f1 45%, #7c3aed 100%);
+    --lip: #4c1d95;
+  }
+  .btn-extend {
+    background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 45%, #ea580c 100%);
+    --lip: #9a3412;
+  }
+  .btn-stop {
+    background: linear-gradient(180deg, #fb7185 0%, #f43f5e 45%, #be123c 100%);
+    --lip: #881337;
+  }
+
+  /* Базовый вид кнопок продления. Объявлен ДО @supports/@container,
+     чтобы те могли переопределить размер по ширине карточки. */
+  .btn.btn-extend-mini {
+    background: linear-gradient(180deg, rgba(245,158,11,.85) 0%, rgba(234,88,12,.85) 100%);
+    border: 1px solid rgba(255,255,255,.25);
+    color: #fff;
+    font-size: .74em;
+    font-weight: 800;
+    padding: 5px 11px;
+    border-radius: 9px;
+    --lip: #7c2d12;
+  }
+
+  /* Адаптация под ширину карточки. Браузеры без container query
+     используют базовые значения выше. */
+  @supports (container-type: inline-size) {
+    .btn {
+      font-size: clamp(9.5px, 7cqw, 15px);
+      padding: 6px clamp(5px, 2.2cqw, 13px);
+    }
+    .btn-extend, .btn-stop { min-width: clamp(22px, 11.5cqw, 38px); }
+    .btn.btn-extend-mini {
+      font-size: clamp(8.5px, 6cqw, 13px);
+      padding: 5px clamp(3px, 1.6cqw, 10px);
+    }
+    .buttons { gap: clamp(2px, 1.3cqw, 6px); }
+    .extend-row.show { gap: clamp(2px, 1.2cqw, 6px); }
+  }
+
+  /* Узкая карточка: 5 кнопок в ряд уже не помещаются — ужимаем,
+     но объём (градиент, блик, губа) сохраняется.
+     Пороги считаются по content-box (без полей карточки). */
+  @container (max-width: 150px) {
+    .btn {
+      font-size: clamp(9.5px, 6.6cqw, 13px);
+      padding: 6px clamp(3px, 1.4cqw, 8px);
+    }
+    .btn-extend, .btn-stop { min-width: clamp(20px, 10cqw, 30px); }
+    .btn.btn-extend-mini {
+      font-size: clamp(8.5px, 5.6cqw, 12px);
+      padding: 4px clamp(2.5px, 1.3cqw, 6px);
+    }
+    .buttons { gap: clamp(2px, 1cqw, 4px); }
+  }
+
+  /* Половина карточки СИМ вдвое ниже обычной карточки — ей нужен
+     и меньший шрифт, и меньшее кольцо, иначе ряд кнопок выталкивает
+     содержимое за нижний край.
+     ВАЖНО: @container не применяется к самому контейнеру, только к потомкам,
+     поэтому правило адресовано .ring-wrap, а не .sim-half. */
+  @container (max-width: 150px) {
+    .sim-half .ring-wrap { --ring: 36px; }
+    .sim-half .time-display { font-size: clamp(.62em, 2.6vw, .9em); }
+    .sim-half .client-name { min-height: 12px; margin: 1px 0; }
+    .sim-half .playback-box { margin: 2px 0 1px; }
+    .sim-half .pb-btn { padding: 5px 3px; }
+  }
+
+  .extend-row {
+    display: none;
+    gap: 4px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  /* Панель продления — выпадающая, а не занимает место в потоке.
+     Иначе на узких карточках она выталкивает содержимое за пределы высоты. */
+  .extend-row.show {
+    display: flex;
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    bottom: 4px;
+    z-index: 6;
+    margin: 0;
+    padding: 5px 4px;
+    gap: 4px;
+    border: 1px solid rgba(251,191,36,0.45);
+    border-radius: 9px;
+    background: rgba(14,14,32,0.94);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.55);
+    animation: extendIn .2s cubic-bezier(.34,1.56,.64,1);
+  }
+  /* анимация только вверх: иначе на первых кадрах панель выходит за нижний край карточки */
+  @keyframes extendIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+  @media (hover: hover) {
+    .btn.btn-extend-mini:hover { background: #f59e0b; color: #fff; }
+  }
+
+  /* ---------- карточка СИМ ---------- */
+  .sim-card { display: flex; flex-direction: column; padding: 6px; gap: 4px; }
+
+  .sim-half {
+    --ring: clamp(40px, 6.5vh, 56px);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-radius: 9px;
+    padding: 5px 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+    position: relative;
+    min-height: 0;
+  }
+  .sim-half::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    border-radius: 9px 9px 0 0;
+  }
+  .sim-half::after { border-radius: 9px; }
+
+  .sim-half:nth-child(1) { background: linear-gradient(160deg, #047857, #10b981); border-color: rgba(52,211,153,0.5); }
+  .sim-half:nth-child(1)::before { background: linear-gradient(90deg, #6ee7b7, #10b981, #6ee7b7); background-size: 200% 100%; }
+  .sim-half:nth-child(2) { background: linear-gradient(160deg, #0e7490, #06b6d4); border-color: rgba(34,211,238,0.5); }
+  .sim-half:nth-child(2)::before { background: linear-gradient(90deg, #67e8f9, #06b6d4, #67e8f9); background-size: 200% 100%; }
+
+  .sim-half.paused { border-color: rgba(251,191,36,0.75); }
+  .sim-half.paused .time-display { color: #fbbf24; text-shadow: 0 0 12px rgba(251,191,36,.6); }
+  .sim-half.warning { border-color: rgba(251,191,36,0.9); box-shadow: 0 0 16px rgba(251,191,36,.4); }
+  .sim-half.finished { border-color: rgba(244,63,94,0.9); animation: finishShake .7s cubic-bezier(.36,.07,.19,.97) 1; }
+
+  .sim-half .card-header { margin-bottom: 0; }
+  .sim-half .card-name { font-size: .62em; }
+  .sim-half .time-display { font-size: clamp(.72em, 1.15vw, 1.05em); line-height: 1.05; }
+  .sim-half .buttons { gap: 2px; margin-top: 1px; }
+  .sim-half .btn.btn-extend-mini { min-width: 0; }
+  .sim-half .extend-row.show { padding: 4px 3px; }
+  .sim-half .client-name { font-size: .6em; min-height: 13px; margin: 1px 0; padding: 2px 5px; }
+  /* прогресс-бар у СИМ не нужен — его показывает кольцо */
+  .sim-half .progress-bar { display: none; }
+  .sim-half .playback-box { margin: 2px 0 1px; gap: 4px; }
+  .sim-half .pb-btn { padding: 6px 3px; border-radius: 9px; gap: 0; }
+  .sim-half .pb-btn .pb-icon { font-size: 1.2em; }
+  .sim-half .pb-btn .pb-label { display: none; }
+
+  /* ---------- модалки ---------- */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-overlay.show { display: flex; }
+
+  .modal {
+    background: linear-gradient(160deg, #1a1a3e, #0f0f2a);
+    border: 1px solid rgba(34,211,238,0.4);
+    border-radius: 16px;
+    padding: 22px;
+    min-width: 300px;
+    max-width: 90vw;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.7);
+    animation: modalIn .3s cubic-bezier(.34,1.56,.64,1);
+    color: #fff;
+  }
+  @keyframes modalIn { from { opacity: 0; transform: scale(.9) translateY(14px); } to { opacity: 1; transform: none; } }
+
+  .modal-title { font-size: 1em; color: #c7d2fe; margin-bottom: 12px; letter-spacing: .5px; text-align: center; }
+
+  .modal-input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(34,211,238,0.3);
+    background: rgba(0,0,0,0.3);
+    color: #fff;
+    font-size: 1em;
+    outline: none;
+    transition: border-color .2s;
+    margin-bottom: 14px;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  .modal-input:focus { border-color: #22d3ee; }
+
+  .modal-hint { font-size: .75em; color: #94a3b8; text-align: center; margin: -6px 0 12px; }
+
+  .modal-buttons { display: flex; gap: 8px; justify-content: center; }
+
+  .modal-btn {
+    padding: 8px 18px;
+    border-radius: 10px;
+    border: none;
+    font-size: .85em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter .2s, transform .2s;
+    letter-spacing: .5px;
+  }
+  .modal-btn:active { transform: scale(.95); }
+  .modal-btn.primary { background: linear-gradient(135deg, #22d3ee, #a78bfa); color: #fff; }
+  .modal-btn.secondary { background: rgba(255,255,255,0.1); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); }
+  .modal-btn.danger { background: rgba(244,63,94,0.2); color: #fda4af; border: 1px solid rgba(244,63,94,0.4); }
+
+  /* ---------- тост / вспышка / конфетти ---------- */
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: linear-gradient(135deg, #22d3ee, #a78bfa);
+    color: #fff;
+    padding: 11px 22px;
+    border-radius: 12px;
+    font-size: .9em;
+    font-weight: 600;
+    box-shadow: 0 8px 24px rgba(34,211,238,0.35);
+    z-index: 200;
+    opacity: 0;
+    transition: opacity .3s, transform .3s;
+    pointer-events: none;
+    max-width: 92vw;
+    text-align: center;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .flash {
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(circle, rgba(244,63,94,0.4), transparent 70%);
+    pointer-events: none;
+    z-index: 99;
+    animation: flashAnim .8s ease-out forwards;
+  }
+  @keyframes flashAnim { from { opacity: 1; } to { opacity: 0; } }
+
+  .confetti-piece {
+    position: fixed;
+    pointer-events: none;
+    z-index: 150;
+    border-radius: 2px;
+    animation: confettiFall linear forwards;
+  }
+  @keyframes confettiFall {
+    from { transform: translateY(0) translateX(0) rotate(0); opacity: 1; }
+    to   { transform: translateY(105vh) translateX(var(--drift, 0px)) rotate(540deg); opacity: 0; }
+  }
+
+  /* ---------- заставка ---------- */
+  .screensaver {
+    position: fixed;
+    inset: 0;
+    background: linear-gradient(160deg, #0a0a1f, #1a1a3e 55%, #0f0f2a);
+    z-index: 500;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    cursor: pointer;
+    color: #fff;
+  }
+  .screensaver.show { display: flex; }
+
+  .screensaver-clock {
+    font-size: clamp(4em, 12vw, 9em);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    background: linear-gradient(90deg, #22d3ee, #a78bfa, #f472b6, #22d3ee);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: titleFlow 7s linear infinite;
+    letter-spacing: 4px;
+  }
+
+  .screensaver-active { font-size: 1em; color: #c7d2fe; letter-spacing: 2px; text-align: center; padding: 0 20px; }
+  .screensaver-active strong { color: #34d399; font-size: 1.3em; }
+
+  /* ---------- панель настроек ---------- */
+  .sound-panel {
+    position: fixed;
+    top: 50px;
+    right: 10px;
+    background: linear-gradient(160deg, #1a1a3e, #0f0f2a);
+    border: 1px solid rgba(34,211,238,0.4);
+    border-radius: 14px;
+    padding: 14px;
+    z-index: 90;
+    box-shadow: 0 10px 34px rgba(0,0,0,0.6);
+    display: none;
+    width: 340px;
+    max-width: 92vw;
+    color: #fff;
+    animation: modalIn .25s cubic-bezier(.34,1.56,.64,1);
+    max-height: calc(100vh - 66px);
+    overflow-y: auto;
+  }
+  .sound-panel.show { display: block; }
+
+  .sound-title { font-size: .8em; color: #c7d2fe; margin-bottom: 10px; letter-spacing: .5px; text-transform: uppercase; font-weight: 700; }
+
+  .sound-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: .85em; }
+  .sound-slider { width: 100%; accent-color: #22d3ee; cursor: pointer; }
+
+  .switch {
+    width: 46px; height: 26px;
+    border-radius: 13px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.08);
+    position: relative;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color .2s;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: #94a3b8;
+    transition: transform .2s;
+  }
+  .switch.on { background: linear-gradient(135deg, #22d3ee, #a78bfa); border-color: transparent; }
+  .switch.on::after { transform: translateX(20px); background: #fff; }
+
+  .sound-sub {
+    font-size: .7em;
+    color: #64748b;
+    margin: -4px 0 10px;
+    line-height: 1.4;
+  }
+
+  .sound-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 4px; }
+
+  .sound-grid button {
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06);
+    color: #cbd5e1;
+    font-size: .72em;
+    cursor: pointer;
+    transition: background-color .2s, color .2s;
+    font-weight: 600;
+    line-height: 1.15;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .sound-grid button .emoji { font-size: 1.4em; line-height: 1; }
+  .sound-grid button.selected { background: linear-gradient(135deg, #22d3ee, #a78bfa); color: #fff; border-color: transparent; }
+
+  /* ---------- адаптив ---------- */
+  @media (max-width: 1100px) {
+    .time-display { font-size: clamp(1.1em, 2.2vw, 1.8em); }
+    .pb-btn { font-size: .85em; padding: 8px 4px; }
+    .pb-btn .pb-label { font-size: .62em; }
+  }
+
+  /* Портрет планшета: низ — 5 карточек (4 ПК + PS) в ряд + широкая полоса СИМ.
+     Число колонок = config.pc.count + 1 (PS). Кольцо по ширине экрана. */
+  @media (max-width: 820px) {
+    body { padding: 6px 8px; }
+    h1 { font-size: 1em; }
+    .icon-btn { width: 34px; height: 34px; font-size: .9em; }
+    .timer-card { --ring: clamp(42px, 9vw, 64px); }
+    .sim-half { --ring: clamp(40px, 8vw, 62px); }
+    .row-vr { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); }
+    .row-bottom { grid-template-columns: repeat(5, 1fr); grid-template-rows: 1fr 1.15fr; }
+    .sim-card { grid-column: 1 / -1; grid-row: 2; flex-direction: row; gap: 6px; }
+    .pb-btn .pb-label { display: none; }
+    .pb-btn { padding: 8px 4px; }
+    .sound-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* Очень узкие экраны (телефон в портрете) — ужимаем вертикальные отступы */
+  @media (max-width: 700px) {
+    .client-name { min-height: 16px; margin: 2px 0 3px; padding: 3px 6px; }
+    .playback-box { margin: 6px 0 4px; }
+    .card-header { margin-bottom: 0; }
+    /* ряд кнопок здесь переносится — пусть карточка прокручивается,
+       а не обрезает элементы управления */
+    .timer-card, .sim-half { overflow-y: auto; overflow-x: hidden; }
+  }
+
+  @media (max-width: 560px) {
+    .timer-card { --ring: 34px; padding: 6px 5px; }
+    .sim-half { --ring: 32px; }
+    .card-name { font-size: .58em; letter-spacing: 0; }
+    .client-name { font-size: .56em; min-height: 14px; padding: 2px 4px; }
+    .btn-extend, .btn-stop { min-width: 24px; }
+    .pb-btn { font-size: .78em; padding: 6px 2px; }
+    .buttons { gap: 2px; }
+    .ring-wrap { margin: 2px 0; }
+    /* на таких ширинах 5 колонок не вмещают 5 кнопок — пусть карточка прокручивается,
+       а не обрезает элементы управления */
+    .timer-card, .sim-half { overflow-y: auto; overflow-x: hidden; }
+  }
+
+  /* ---------- ЛЁГКИЙ РЕЖИМ + уважение к настройкам системы ---------- */
+  body.lite *,
+  body.lite *::before,
+  body.lite *::after {
+    animation: none !important;
+    transition-duration: .12s !important;
+  }
+  body.lite .timer-card.active .time-display { color: #eafff6; }
+  body.lite .pb-btn { box-shadow: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation: none !important;
+      transition-duration: .12s !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>⏱ ТАЙМЕРЫ УСЛУГ</h1>
+  <div class="top-actions">
+    <button class="icon-btn" id="lite-btn" title="Лёгкий режим (экономия ресурсов)">⚡</button>
+    <button class="icon-btn" id="sound-btn" title="Настройки звука">🔊</button>
+    <button class="icon-btn" id="theme-btn" title="Сменить тему">🌙</button>
+    <button class="icon-btn" id="fullscreen-btn" title="Полный экран">⛶</button>
+    <button class="icon-btn" id="install-btn" title="Установить" style="display:none;">📲</button>
+  </div>
+</div>
+
+<div class="sound-panel" id="sound-panel">
+  <div class="sound-title">⚡ Производительность</div>
+  <div class="sound-row">
+    <span>Лёгкий режим</span>
+    <div class="switch" id="lite-switch"></div>
+  </div>
+  <div class="sound-sub" id="lite-info">Отключает анимации — быстрее на слабых планшетах</div>
+
+  <div class="sound-row" style="margin-top:12px; margin-bottom:4px;">
+    <span>Затемнять неактивные</span>
+    <div class="switch" id="dim-switch"></div>
+  </div>
+
+  <div class="sound-title" style="margin-top:16px;">🔊 Громкость</div>
+  <div class="sound-row">
+    <span>Уровень</span>
+    <span id="vol-display">100%</span>
+  </div>
+  <input type="range" class="sound-slider" id="volume-slider" min="0" max="100" value="100">
+
+  <div class="sound-row" style="margin-top:14px; margin-bottom:2px;">
+    <span>Мелодия завершения</span>
+  </div>
+  <div class="sound-grid" id="melody-grid">
+    <button data-melody="classic" class="selected"><span class="emoji">🎵</span>Классика</button>
+    <button data-melody="ding"><span class="emoji">🔔</span>Динь-динь</button>
+    <button data-melody="siren"><span class="emoji">🚨</span>Сирена</button>
+    <button data-melody="arcade"><span class="emoji">🕹️</span>Аркада</button>
+    <button data-melody="chime"><span class="emoji">🎐</span>Колокольчик</button>
+    <button data-melody="bell"><span class="emoji">🛎️</span>Гонг</button>
+    <button data-melody="beep"><span class="emoji">📟</span>Бип-буп</button>
+    <button data-melody="alarm"><span class="emoji">⏰</span>Будильник</button>
+    <button data-melody="birds"><span class="emoji">🐦</span>Птицы</button>
+    <button data-melody="rain"><span class="emoji">🌧️</span>Дождь</button>
+    <button data-melody="rooster"><span class="emoji">🐓</span>Петух</button>
+    <button data-melody="trumpet"><span class="emoji">🎺</span>Фанфары</button>
+    <button data-melody="gunshot"><span class="emoji">💥</span>Выстрел</button>
+    <button data-melody="boom"><span class="emoji">💣</span>Бум</button>
+    <button data-melody="laser"><span class="emoji">⚡</span>Лазер</button>
+    <button data-melody="ufo"><span class="emoji">🛸</span>НЛО</button>
+    <button data-melody="sonar"><span class="emoji">📡</span>Сонар</button>
+    <button data-melody="levelup"><span class="emoji">🎮</span>Level Up</button>
+  </div>
+</div>
+
+<div class="rows">
+  <div class="row row-vr" id="vr-grid">
+    <div class="row-progress"><div class="row-progress-fill" id="row-vr-fill"></div></div>
+  </div>
+  <div class="row row-bottom" id="bottom-grid">
+    <div class="row-progress"><div class="row-progress-fill" id="row-bottom-fill"></div></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="name-modal">
+  <div class="modal">
+    <div class="modal-title">👤 Введите имя клиента</div>
+    <input type="text" class="modal-input" id="name-input" placeholder="Иван" maxlength="20" autocomplete="off">
+    <div class="modal-buttons">
+      <button class="modal-btn secondary" id="name-cancel">Отмена</button>
+      <button class="modal-btn primary" id="name-save">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="rename-modal">
+  <div class="modal">
+    <div class="modal-title">✏️ Название услуги</div>
+    <input type="text" class="modal-input" id="rename-input" placeholder="Например: VR №1 или ПК VIP" maxlength="24" autocomplete="off">
+    <div class="modal-hint">Можно ввести своё название для этой карточки</div>
+    <div class="modal-buttons">
+      <button class="modal-btn danger" id="rename-reset">Сброс</button>
+      <button class="modal-btn secondary" id="rename-cancel">Отмена</button>
+      <button class="modal-btn primary" id="rename-save">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="screensaver" id="screensaver">
+  <div class="screensaver-clock" id="saver-clock">00:00</div>
+  <div class="screensaver-active" id="saver-info">Нет активных таймеров</div>
+  <div class="screensaver-active" style="font-size: 0.8em; opacity: 0.6;">Коснитесь экрана, чтобы продолжить</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     КОНСТАНТЫ
+     ============================================================ */
+  var WARNING_TIME = 300;          // предупреждение за 5 минут (сек)
+  var IDLE_TIMEOUT = 5 * 60 * 1000;
+  var STORE_TICK  = 'timerApp';
+  var STORE_SET   = 'timerSettings';
+  var STORE_NAMES = 'timerCustomNames';
+
+  var VR_STYLES = [
+    { cls: 'vr-white',    default: 'VR · Белый' },
+    { cls: 'vr-graphite', default: 'VR · Графит' },
+    { cls: 'vr-sky',      default: 'VR · Небо' },
+    { cls: 'vr-amber',    default: 'VR · Янтарь' },
+    { cls: 'vr-rose',     default: 'VR · Роза' },
+    { cls: 'vr-violet',   default: 'VR · Фиалка' }
+  ];
+
+  var config = {
+    vr:  { count: 6, options: [20, 40, 60], extendOptions: [10, 20, 40, 60] },
+    pc:  { count: 4, options: [30, 60],    extendOptions: [30, 60] },
+    ps:  { count: 1, options: [30, 60],    extendOptions: [30, 60] },
+    sim: { count: 2, options: [20, 40, 60], extendOptions: [10, 20, 40, 60] }
+  };
+
+  /* ============================================================
+     СОСТОЯНИЕ
+     ============================================================ */
+  var timers = {};     // id -> данные таймера
+  var els = {};        // id -> кэш DOM-узлов (без поиска по документу в горячем цикле)
+  var customNames = {};
+  var settings = {
+    volume: 1.0,
+    melody: 'classic',
+    theme: 'dark',
+    dimIdle: false,
+    lite: false
+  };
+
+  var CIRC = 2 * Math.PI * 46;
+  var rowSig = '';
+  var ticker = null;
+  var lastTickAt = 0;
+  var tickCount = 0;
+  var finishStagger = 0;
+  var saveDirty = true;
+  var lastSavedAt = 0;
+  var pendingStop = null;
+  var stopResetTimer = null;
+  var openExtendId = null;
+
+  /* ============================================================
+     ХРАНИЛИЩЕ
+     ============================================================ */
+  function readJSON(key, def) {
+    try {
+      var raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : def;
+    } catch (e) { return def; }
+  }
+  function writeJSON(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+  }
+
+  function loadSettings() {
+    var s = readJSON(STORE_SET, null);
+    if (s) {
+      if (typeof s.volume === 'number') settings.volume = Math.min(1, Math.max(0, s.volume));
+      if (s.melody) settings.melody = s.melody;
+      if (s.theme) settings.theme = s.theme;
+      settings.dimIdle = !!s.dimIdle;
+      if (typeof s.lite === 'boolean') settings.lite = s.lite;
+      else settings.lite = autoDetectLite();
+    } else {
+      settings.lite = autoDetectLite();
+    }
+  }
+
+  function saveSettings() { writeJSON(STORE_SET, settings); }
+
+  function saveState(force) {
+    // localStorage пишет синхронно на диск — на слабом планшете это заметно.
+    // Пишем не чаще раза в 15 сек и только если что-то изменилось.
+    var now = Date.now();
+    if (!force && (!saveDirty || now - lastSavedAt < 15000)) return;
+    var state = { savedAt: now, timers: {} };
+    var any = false;
+    for (var id in timers) {
+      var t = timers[id];
+      if (!t.total && !t.clientName) continue;
+      any = true;
+      state.timers[id] = {
+        remaining: t.remaining, running: t.running, finished: t.finished,
+        total: t.total, clientName: t.clientName, paused: t.paused, warned: t.warned
+      };
+    }
+    if (!any && !force) { saveDirty = false; return; }
+    writeJSON(STORE_TICK, state);
+    lastSavedAt = now;
+    saveDirty = false;
+  }
+
+  function loadState() {
+    var state = readJSON(STORE_TICK, null);
+    if (!state || !state.timers) return false;
+    var elapsed = Math.floor((Date.now() - (state.savedAt || Date.now())) / 1000);
+    var restored = false;
+
+    for (var id in state.timers) {
+      var saved = state.timers[id];
+      var t = timers[id];
+      if (!t || !saved) continue;
+      var remaining = saved.remaining != null ? saved.remaining : saved.r;
+      var total     = saved.total     != null ? saved.total     : saved.T;
+      t.total = total || 0;
+      t.clientName = saved.clientName || saved.c || '';
+      t.paused = !!(saved.paused != null ? saved.paused : saved.p);
+      t.warned = !!(saved.warned != null ? saved.warned : saved.w);
+
+      if ((saved.running != null ? saved.running : saved.n) && !t.paused) {
+        var left = Math.max(0, remaining - elapsed);
+        if (left <= 0) {
+          t.remaining = 0; t.running = false; t.finished = true; t.paused = false;
+        } else {
+          t.remaining = left; t.running = true; t.finished = false;
+        }
+      } else {
+        t.remaining = remaining || 0;
+        t.running = false;
+        t.finished = !!(saved.finished != null ? saved.finished : saved.f);
+      }
+      if (t.running || t.total || t.clientName) restored = true;
+    }
+    return restored;
+  }
+
+  /* ============================================================
+     АВТООПРЕДЕЛЕНИЕ «ЛЁГКОГО РЕЖИМА»
+     ============================================================ */
+  function autoDetectLite() {
+    var mem = navigator.deviceMemory || 0;       // Chrome: округлено, GB
+    var cores = navigator.hardwareConcurrency || 0;
+    if (mem && mem <= 2) return true;
+    if (cores && cores <= 4) return true;
+    return false;
+  }
+
+  /* ============================================================
+     УТИЛИТЫ
+     ============================================================ */
+  function formatTime(sec) {
+    sec = sec < 0 ? 0 : Math.floor(sec);
+    var m = (sec / 60) | 0;
+    var s = sec % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function warningThreshold(t) {
+    if (!t.total) return 0;
+    return Math.min(WARNING_TIME, Math.max(60, Math.round(t.total / 3)));
+  }
+
+  function getDisplayName(id) {
+    return customNames[id] || timers[id].fallbackName;
+  }
+
+  function flashEl(el) {
+    // Без принудительного reflow (void offsetWidth) — только Web Animations
+    if (!el.animate || settings.lite) return;
+    try {
+      el.animate(
+        [{ transform: 'scale(1.04)' }, { transform: 'scale(1)' }],
+        { duration: 260, easing: 'ease-out' }
+      );
+    } catch (e) {}
+  }
+
+  /* ============================================================
+     ПОСТРОЕНИЕ КАРТОЧЕК
+     ============================================================ */
+  function btnTimes(id, options) {
+    return options.map(function (o) {
+      return '<button class="btn btn-time" data-id="' + id + '" data-min="' + o + '">' + o + 'м</button>';
+    }).join('');
+  }
+  function btnExtends(id, options) {
+    return options.map(function (o) {
+      return '<button class="btn btn-extend-mini" data-extend-id="' + id + '" data-min="' + o + '">+' + o + 'м</button>';
+    }).join('');
+  }
+
+  function innerHTML(id, fallback, options, extendOptions) {
+    return '' +
+      '<div class="card-header">' +
+        '<div class="card-name" data-rename-id="' + id + '" title="Нажмите, чтобы переименовать">' + fallback + '</div>' +
+        '<div class="status-dot"></div>' +
+      '</div>' +
+      '<div class="client-name" data-client-id="' + id + '">— клиент —</div>' +
+      '<div class="progress-bar"><div class="progress-fill"></div></div>' +
+      '<div class="ring-wrap" data-toggle-timer="' + id + '" title="Нажмите, чтобы поставить паузу / продолжить">' +
+        '<svg class="ring-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-hidden="true">' +
+          '<circle class="ring-track" cx="50" cy="50" r="46"></circle>' +
+          '<circle class="ring-progress" cx="50" cy="50" r="46"></circle>' +
+        '</svg>' +
+        '<div class="time-display">00:00</div>' +
+      '</div>' +
+      '<div class="playback-box">' +
+        '<button class="pb-btn pb-pause" data-pause="' + id + '" title="Пауза"><span class="pb-icon">⏸</span><span class="pb-label">Пауза</span></button>' +
+        '<button class="pb-btn pb-play" data-play="' + id + '" title="Продолжить"><span class="pb-icon">▶</span><span class="pb-label">Плей</span></button>' +
+      '</div>' +
+      '<div class="buttons">' +
+        btnTimes(id, options) +
+        '<button class="btn btn-extend" data-extend="' + id + '">+</button>' +
+        '<button class="btn btn-stop" data-stop="' + id + '">■</button>' +
+      '</div>' +
+      '<div class="extend-row">' +
+        btnExtends(id, extendOptions) +
+      '</div>';
+  }
+
+  function registerTimer(id, section, fallbackName) {
+    timers[id] = {
+      remaining: 0, total: 0, running: false, finished: false, paused: false,
+      warned: false, clientName: '', section: section,
+      fallbackName: fallbackName, vis: null, lastFlash: 0
+    };
+  }
+
+  function cacheEls(id, card) {
+    els[id] = {
+      card: card,
+      dot: card.querySelector('.status-dot'),
+      name: card.querySelector('[data-rename-id]'),
+      client: card.querySelector('[data-client-id]'),
+      display: card.querySelector('.time-display'),
+      ring: card.querySelector('.ring-progress'),
+      bar: card.querySelector('.progress-fill'),
+      pauseBtn: card.querySelector('[data-pause]'),
+      playBtn: card.querySelector('[data-play]'),
+      stopBtn: card.querySelector('[data-stop]'),
+      extendBtn: card.querySelector('[data-extend]'),
+      extendRow: card.querySelector('.extend-row')
+    };
+    // кольцо не видно в покое — не тратим на него стили
+    if (els[id].ring) els[id].ring.style.strokeDasharray = CIRC;
+  }
+
+  function buildUI() {
+    var vrGrid = document.getElementById('vr-grid');
+    var bottomGrid = document.getElementById('bottom-grid');
+    var frag1 = document.createDocumentFragment();
+    var frag2 = document.createDocumentFragment();
+
+    for (var i = 0; i < config.vr.count; i++) {
+      var vid = 'vr-' + i;
+      var st = VR_STYLES[i];
+      registerTimer(vid, 'vr', st.default);
+      var vcard = document.createElement('div');
+      vcard.className = 'timer-card ' + st.cls;
+      vcard.id = 'card-' + vid;
+      vcard.style.animationDelay = (i * 0.04).toFixed(2) + 's';
+      vcard.innerHTML = innerHTML(vid, getDisplayName(vid), config.vr.options, config.vr.extendOptions);
+      cacheEls(vid, vcard);
+      frag1.appendChild(vcard);
+    }
+    vrGrid.appendChild(frag1);
+
+    for (var p = 0; p < config.pc.count; p++) {
+      var pid = 'pc-' + p;
+      registerTimer(pid, 'pc', 'ПК №' + (p + 1));
+      var pcard = document.createElement('div');
+      pcard.className = 'timer-card';
+      pcard.id = 'card-' + pid;
+      pcard.style.animationDelay = (0.24 + p * 0.04).toFixed(2) + 's';
+      pcard.innerHTML = innerHTML(pid, getDisplayName(pid), config.pc.options, config.pc.extendOptions);
+      cacheEls(pid, pcard);
+      frag2.appendChild(pcard);
+    }
+
+    var psid = 'ps-0';
+    registerTimer(psid, 'ps', 'PS №1');
+    var pscard = document.createElement('div');
+    pscard.className = 'timer-card';
+    pscard.id = 'card-' + psid;
+    pscard.style.animationDelay = '0.40s';
+    pscard.innerHTML = innerHTML(psid, getDisplayName(psid), config.ps.options, config.ps.extendOptions);
+    cacheEls(psid, pscard);
+    frag2.appendChild(pscard);
+
+    // СИМ — две половины в одной карточке
+    var simCard = document.createElement('div');
+    simCard.className = 'timer-card sim-card';
+    simCard.id = 'card-sim-wrapper';
+    simCard.style.animationDelay = '0.44s';
+    var simHTML = '';
+    for (var s = 0; s < config.sim.count; s++) {
+      var sid = 'sim-' + s;
+      registerTimer(sid, 'sim', 'СИМ · Место ' + (s + 1));
+      simHTML += '<div class="sim-half" id="card-' + sid + '">' +
+        innerHTML(sid, getDisplayName(sid), config.sim.options, config.sim.extendOptions) +
+        '</div>';
+    }
+    simCard.innerHTML = simHTML;
+    frag2.appendChild(simCard);
+    bottomGrid.appendChild(frag2);
+
+    for (var k = 0; k < config.sim.count; k++) cacheEls('sim-' + k, document.getElementById('card-sim-' + k));
+  }
+
+  /* ============================================================
+     ОТРИСОВКА (только то, что реально изменилось)
+     ============================================================ */
+  function syncTime(id, animate) {
+    var t = timers[id], e = els[id];
+    var txt = formatTime(t.remaining);
+    if (e.display.firstChild && e.display.firstChild.nodeValue === txt) {
+      // текст не изменился — DOM не трогаем
+    } else {
+      e.display.textContent = txt;
+    }
+
+    // анимацию «тик» запускаем не чаще раза в 2 с на карточку
+    if (animate && !settings.lite && (Date.now() - t.lastFlash) > 2000) {
+      t.lastFlash = Date.now();
+      flashEl(e.display);
+    }
+
+    if (t.total > 0 && t.vis !== 'idle' && e.bar) {
+      var pct = (t.total - t.remaining) / t.total;
+      if (pct < 0) pct = 0; else if (pct > 1) pct = 1;
+      e.ring.style.strokeDashoffset = (CIRC * (1 - pct)).toFixed(1);
+      e.bar.style.width = (pct * 100).toFixed(2) + '%';
+    }
+  }
+
+  function syncState(id) {
+    var t = timers[id], e = els[id];
+    var vis;
+    if (t.finished) vis = 'finished';
+    else if (t.paused && t.remaining > 0) vis = 'paused';
+    else if (t.running) vis = (t.remaining <= warningThreshold(t) && t.remaining > 0) ? 'warning' : 'active';
+    else vis = 'idle';
+
+    if (vis === t.vis) return;
+    t.vis = vis;
+    saveDirty = true;
+
+    var c = e.card;
+    c.classList.toggle('active', vis === 'active' || vis === 'warning');
+    c.classList.toggle('warning', vis === 'warning');
+    c.classList.toggle('paused', vis === 'paused');
+    c.classList.toggle('finished', vis === 'finished');
+    e.dot.className = 'status-dot' + (vis === 'idle' ? '' : ' ' + vis);
+
+    // кнопки пауза/плей
+    e.pauseBtn.classList.toggle('pb-disabled', !(t.running));
+    e.playBtn.classList.toggle('pb-disabled', !(t.paused && t.remaining > 0));
+
+    if (vis === 'idle') {
+      e.ring.style.strokeDashoffset = CIRC;
+      e.bar.style.width = '0%';
+      e.display.textContent = '00:00';
+      hideExtend(id);
+    } else if (vis === 'finished') {
+      e.ring.style.strokeDashoffset = '0';
+      e.bar.style.width = '100%';
+      e.display.textContent = '00:00';
+    }
+    updateRowProgress();
+  }
+
+  function refreshClient(id) {
+    var e = els[id], t = timers[id];
+    var txt = t.clientName ? '\uD83D\uDC64 ' + t.clientName : '— клиент —';
+    if (e.client.textContent !== txt) e.client.textContent = txt;
+    e.client.classList.toggle('filled', !!t.clientName);
+    saveDirty = true;
+  }
+
+  function updateRowProgress(force) {
+    var sumVr = 0, nVr = 0, sumBt = 0, nBt = 0;
+    for (var id in timers) {
+      var t = timers[id];
+      if (!(t.running || t.paused) || !t.total) continue;
+      var p = (t.total - t.remaining) / t.total;
+      if (id.indexOf('vr-') === 0) { sumVr += p; nVr++; }
+      else { sumBt += p; nBt++; }
+    }
+    var sig = sumVr.toFixed(3) + '|' + nVr + '|' + sumBt.toFixed(3) + '|' + nBt;
+    if (!force && sig === rowSig) return;
+    rowSig = sig;
+
+    var vrRow = document.getElementById('vr-grid');
+    var btRow = document.getElementById('bottom-grid');
+    vrRow.classList.toggle('has-active', nVr > 0);
+    btRow.classList.toggle('has-active', nBt > 0);
+    document.getElementById('row-vr-fill').style.width = nVr ? ((sumVr / nVr) * 100).toFixed(1) + '%' : '0%';
+    document.getElementById('row-bottom-fill').style.width = nBt ? ((sumBt / nBt) * 100).toFixed(1) + '%' : '0%';
+  }
+
+  /* ============================================================
+     ЕДИНЫЙ ТАЙМЕР (вместо 13 отдельных интервалов)
+     ============================================================ */
+  function startTicker() {
+    if (ticker) return;
+    lastTickAt = Date.now();
+    ticker = setInterval(masterTick, 1000);
+  }
+  function stopTicker() {
+    if (ticker) { clearInterval(ticker); ticker = null; }
+  }
+
+  function masterTick() {
+    var now = Date.now();
+    var elapsed = ((now - lastTickAt) / 1000) | 0;
+    if (elapsed < 1) return;
+    if (elapsed > 300) elapsed = 300;               // защита от «скачка» после сна
+    lastTickAt += elapsed * 1000;
+
+    finishStagger = 0;
+    var any = false;
+
+    for (var id in timers) {
+      var t = timers[id];
+      if (!t.running) continue;
+      any = true;
+      t.remaining -= elapsed;
+      if (t.remaining <= 0) { finishTimer(id); continue; }
+
+      var th = warningThreshold(t);
+      if (!t.warned && t.remaining <= th) {
+        t.warned = true;
+        warnTimer(id, th);
+      }
+      syncTime(id, true);
+      syncState(id);           // внутри есть ранний выход, если статус тот же
+    }
+
+    if (!any) { stopTicker(); saveState(); return; }
+
+    tickCount++;
+    if (tickCount % 5 === 0) updateRowProgress();
+    if (tickCount % 10 === 0) saveState();
+  }
+
+  /* ============================================================
+     ДЕЙСТВИЯ
+     ============================================================ */
+  function startTimer(id, minutes) {
+    var t = timers[id];
+    t.remaining = minutes * 60;
+    t.total = minutes * 60;
+    t.running = true;
+    t.finished = false;
+    t.paused = false;
+    t.warned = false;
+    t.vis = null;
+    syncTime(id, false);
+    syncState(id);
+    hideExtend(id);
+    resetStopBtn(id);
+    startTicker();
+    updateTitleBadge();
+    saveState(true);
+  }
+
+  function extendTimer(id, minutes) {
+    var t = timers[id];
+    if (!t.running && !t.paused && !t.finished && t.remaining === 0) {
+      startTimer(id, minutes);
+      return;
+    }
+    t.remaining += minutes * 60;
+    t.total += minutes * 60;
+    t.finished = false;
+    t.warned = false;
+    if (!t.running && !t.paused) {
+      t.running = true;
+      t.vis = null;
+      syncState(id);
+      startTicker();
+    }
+    syncTime(id, true);
+    hideExtend(id);
+    saveState(true);
+  }
+
+  function pauseTimer(id) {
+    var t = timers[id];
+    if (!t.running) return;
+    t.running = false;
+    t.paused = true;
+    syncState(id);
+    saveState(true);
+    showToast('⏸ Пауза · ' + getDisplayName(id));
+  }
+
+  function resumeTimer(id) {
+    var t = timers[id];
+    if (t.running || t.remaining <= 0) return;
+    t.running = true;
+    t.paused = false;
+    t.finished = false;
+    syncState(id);
+    startTicker();
+    saveState(true);
+    showToast('▶ Продолжаем · ' + getDisplayName(id));
+  }
+
+  function toggleTimer(id) {
+    var t = timers[id];
+    if (t.running) pauseTimer(id);
+    else if (t.paused && t.remaining > 0) resumeTimer(id);
+  }
+
+  function stopTimer(id) {
+    var t = timers[id];
+    t.running = false;
+    t.finished = false;
+    t.paused = false;
+    t.remaining = 0;
+    t.total = 0;
+    t.warned = false;
+    t.vis = null;
+    syncState(id);
+    hideExtend(id);
+    resetStopBtn(id);
+    saveState(true);
+    updateTitleBadge();
+  }
+
+  function warnTimer(id, threshold) {
+    playWarningSound();
+    var t = timers[id];
+    var who = t.clientName ? getDisplayName(id) + ' (' + t.clientName + ')' : getDisplayName(id);
+    var mins = Math.max(1, Math.round(threshold / 60));
+    showToast('⚠️ ' + who + ': осталось ' + mins + ' мин');
+  }
+
+  function finishTimer(id) {
+    var t = timers[id];
+    t.remaining = 0;
+    t.running = false;
+    t.finished = true;
+    t.paused = false;
+    syncState(id);
+    updateTitleBadge();
+    saveState(true);
+
+    var delay = finishStagger * 550;
+    finishStagger = Math.min(finishStagger + 1, 5);
+    var inBackground = document.hidden;
+    setTimeout(function () {
+      playFinishSound();                       // сигнал нужен всегда
+      if (inBackground) return;                // анимации в фоне только жгут батарею
+      flashScreen();
+      launchConfetti(id);
+    }, delay);
+
+    if (navigator.vibrate && !inBackground) { try { navigator.vibrate([200, 100, 200, 100, 300]); } catch (e) {} }
+  }
+
+  function resetStopBtn(id) {
+    if (pendingStop !== id) return;
+    var b = els[id].stopBtn;
+    b.textContent = '■';
+    b.style.background = '';
+    b.style.color = '';
+    pendingStop = null;
+    if (stopResetTimer) { clearTimeout(stopResetTimer); stopResetTimer = null; }
+  }
+
+  /* ============================================================
+     ЭФФЕКТЫ
+     ============================================================ */
+  function flashScreen() {
+    if (settings.lite) return;
+    var f = document.createElement('div');
+    f.className = 'flash';
+    document.body.appendChild(f);
+    setTimeout(function () { if (f.parentNode) f.parentNode.removeChild(f); }, 850);
+  }
+
+  function launchConfetti(id) {
+    if (settings.lite) return;
+    var card = els[id].card;
+    var r = card.getBoundingClientRect();
+    var cx = r.left + r.width / 2;
+    var cy = r.top + r.height / 2;
+    var colors = ['#34d399', '#22d3ee', '#a78bfa', '#f472b6', '#fbbf24', '#f43f5e', '#fff'];
+    var count = 14;                       // было 40 — на слабом железе это лаги
+
+    for (var i = 0; i < count; i++) {
+      var p = document.createElement('div');
+      p.className = 'confetti-piece';
+      var size = 6 + Math.random() * 7;
+      p.style.cssText =
+        'width:' + size.toFixed(0) + 'px;height:' + size.toFixed(0) + 'px;' +
+        'left:' + cx.toFixed(0) + 'px;top:' + cy.toFixed(0) + 'px;' +
+        'background:' + colors[(Math.random() * colors.length) | 0] + ';';
+      var angle = Math.random() * Math.PI * 2;
+      var dist = 80 + Math.random() * 200;
+      p.style.setProperty('--drift', (Math.cos(angle) * dist).toFixed(0) + 'px');
+      var dur = 1.1 + Math.random() * 0.8;
+      p.style.animationDuration = dur.toFixed(2) + 's';
+      document.body.appendChild(p);
+      (function (node, d) {
+        setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, (d + 0.3) * 1000);
+      })(p, dur);
+    }
+  }
+
+  var toastTimer = null;
+  function showToast(text) {
+    var el = document.getElementById('toast');
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2600);
+  }
+
+  function updateTitleBadge() {
+    var n = 0;
+    for (var id in timers) if (timers[id].finished) n++;
+    document.title = n > 0 ? '(' + n + ') Таймеры услуг' : 'Таймеры услуг';
+  }
+
+  /* ============================================================
+     ЗВУК — один общий AudioContext на всё приложение
+     ============================================================ */
+  var audioCtx = null;
+  function ac() {
+    try {
+      if (!audioCtx) {
+        var Ctor = window.AudioContext || window.webkitAudioContext;
+        if (!Ctor) return null;
+        audioCtx = new Ctor();
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      return audioCtx;
+    } catch (e) { return null; }
+  }
+
+  function tone(ctx, out, type, freq, start, dur, vol, glideTo) {
+    var osc = ctx.createOscillator();
+    var g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, start);
+    if (glideTo) osc.frequency.exponentialRampToValueAtTime(glideTo, start + dur);
+    g.gain.setValueAtTime(0.0001, start);
+    g.gain.linearRampToValueAtTime(vol, start + 0.01);
+    g.gain.setValueAtTime(vol, start + Math.max(0.02, dur * 0.6));
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    osc.connect(g); g.connect(out);
+    osc.start(start); osc.stop(start + dur + 0.05);
+  }
+
+  function noiseBurst(ctx, out, start, dur, vol, filtType, f0, f1) {
+    var len = Math.max(1, Math.floor(ctx.sampleRate * dur));
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 4);
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    var f = ctx.createBiquadFilter();
+    f.type = filtType || 'lowpass';
+    f.frequency.setValueAtTime(f0 || 2000, start);
+    if (f1) f.frequency.exponentialRampToValueAtTime(f1, start + dur * 0.75);
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(vol, start);
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    src.connect(f); f.connect(g); g.connect(out);
+    src.start(start); src.stop(start + dur + 0.02);
+  }
+
+  var players = {
+    classic: function (ctx, m) {
+      var t = ctx.currentTime;
+      tone(ctx, m, 'square', 1200, t, .18, .9);
+      tone(ctx, m, 'square', 1200, t + .22, .18, .9);
+      tone(ctx, m, 'square', 1600, t + .44, .20, 1);
+      tone(ctx, m, 'sawtooth', 1000, t + .70, .30, 1);
+      tone(ctx, m, 'square', 1500, t + 1.05, .25, 1);
+      tone(ctx, m, 'square', 2000, t + 1.35, .55, 1);
+      tone(ctx, m, 'sine', 180, t, .30, 1, 60);
+    },
+    ding: function (ctx, m) {
+      var t = ctx.currentTime;
+      [1046, 1318, 1568, 2093].forEach(function (f, i) { tone(ctx, m, 'sine', f, t + i * .2, 1.2, .7); });
+    },
+    siren: function (ctx, m) {
+      var t = ctx.currentTime;
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sawtooth';
+      for (var i = 0; i < 3; i++) {
+        osc.frequency.setValueAtTime(600, t + i * .6);
+        osc.frequency.linearRampToValueAtTime(1200, t + i * .6 + .3);
+        osc.frequency.linearRampToValueAtTime(600, t + i * .6 + .6);
+      }
+      g.gain.setValueAtTime(.5, t);
+      g.gain.setValueAtTime(.5, t + 1.6);
+      g.gain.exponentialRampToValueAtTime(.0001, t + 1.9);
+      osc.connect(g); g.connect(m);
+      osc.start(t); osc.stop(t + 2);
+    },
+    arcade: function (ctx, m) {
+      var t = ctx.currentTime;
+      [523, 659, 784, 1046, 784, 1046, 1318, 1568].forEach(function (f, i) {
+        tone(ctx, m, 'square', f, t + i * .1, .15, .6);
+      });
+    },
+    chime: function (ctx, m) {
+      var t = ctx.currentTime;
+      [[2093, 0, 1.5], [2637, .15, 1.4], [3136, .30, 1.3], [2093, .55, 1.6]].forEach(function (n) {
+        tone(ctx, m, 'sine', n[0], t + n[1], n[2], .55);
+        tone(ctx, m, 'sine', n[0] * 2.01, t + n[1], n[2] * .6, .18);
+      });
+    },
+    bell: function (ctx, m) {
+      var t = ctx.currentTime;
+      [110, 165, 220, 330, 440].forEach(function (f, i) {
+        tone(ctx, m, 'sine', f, t, 2.8 - i * .15, .9 / (i + 1));
+      });
+      noiseBurst(ctx, m, t, .08, .4, 'bandpass', 300);
+    },
+    beep: function (ctx, m) {
+      var t = ctx.currentTime;
+      [[880,0,.12],[880,.16,.12],[1320,.32,.12],[1320,.48,.12],[1760,.64,.20],[880,.90,.25]].forEach(function (s) {
+        tone(ctx, m, 'square', s[0], t + s[1], s[2], .55);
+      });
+    },
+    alarm: function (ctx, m) {
+      var t = ctx.currentTime;
+      for (var r = 0; r < 3; r++) {
+        for (var o = 0; o < 4; o++) {
+          tone(ctx, m, 'square', 2000, t + r * .45 + o * .06, .05, .55);
+        }
+      }
+    },
+    birds: function (ctx, m) {
+      var t = ctx.currentTime;
+      for (var i = 0; i < 8; i++) {
+        var st = t + i * .14 + Math.random() * .05;
+        var f0 = 2000 + Math.random() * 1500;
+        var dur = .08 + Math.random() * .06;
+        var osc = ctx.createOscillator(), g = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(f0, st);
+        osc.frequency.linearRampToValueAtTime(f0 * (1 + Math.random() * .5), st + dur);
+        osc.frequency.linearRampToValueAtTime(f0 * .85, st + dur * 1.8);
+        g.gain.setValueAtTime(.0001, st);
+        g.gain.linearRampToValueAtTime(.45, st + .005);
+        g.gain.exponentialRampToValueAtTime(.0001, st + dur * 2);
+        osc.connect(g); g.connect(m);
+        osc.start(st); osc.stop(st + dur * 2.1);
+      }
+    },
+    rain: function (ctx, m) {
+      var t = ctx.currentTime;
+      var len = Math.floor(ctx.sampleRate * 2);
+      var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      var d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1);
+      var src = ctx.createBufferSource(); src.buffer = buf;
+      var f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 2000; f.Q.value = .6;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(.0001, t);
+      g.gain.linearRampToValueAtTime(.5, t + .15);
+      g.gain.setValueAtTime(.5, t + 1.4);
+      g.gain.exponentialRampToValueAtTime(.0001, t + 2);
+      src.connect(f); f.connect(g); g.connect(m);
+      src.start(t); src.stop(t + 2.1);
+      for (var k = 0; k < 15; k++) {
+        var st = t + Math.random() * 1.8;
+        tone(ctx, m, 'sine', 1200 + Math.random() * 800, st, .06, .15);
+      }
+    },
+    rooster: function (ctx, m) {
+      var t = ctx.currentTime;
+      [[700,.15,-200],[900,.12,300],[1200,.18,400],[1000,.25,-500]].forEach(function (s, i) {
+        var st = t + i * .18;
+        var osc = ctx.createOscillator(), g = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(s[0], st);
+        osc.frequency.linearRampToValueAtTime(s[0] + s[2], st + s[1]);
+        g.gain.setValueAtTime(.0001, st);
+        g.gain.linearRampToValueAtTime(.5, st + .02);
+        g.gain.setValueAtTime(.5, st + s[1] - .05);
+        g.gain.exponentialRampToValueAtTime(.0001, st + s[1] + .05);
+        osc.connect(g); g.connect(m);
+        osc.start(st); osc.stop(st + s[1] + .1);
+      });
+    },
+    trumpet: function (ctx, m) {
+      var t = ctx.currentTime;
+      [[523,0,.18],[523,.20,.18],[659,.40,.18],[784,.60,.35],[659,1.00,.18],[784,1.20,.65]].forEach(function (n) {
+        var st = t + n[1];
+        var o1 = ctx.createOscillator(), o2 = ctx.createOscillator(), g = ctx.createGain();
+        o1.type = 'sawtooth'; o2.type = 'sawtooth';
+        o1.frequency.value = n[0]; o2.frequency.value = n[0] * 1.003;
+        g.gain.setValueAtTime(.0001, st);
+        g.gain.linearRampToValueAtTime(.55, st + .02);
+        g.gain.setValueAtTime(.55, st + n[2] - .03);
+        g.gain.exponentialRampToValueAtTime(.0001, st + n[2] + .05);
+        o1.connect(g); o2.connect(g); g.connect(m);
+        o1.start(st); o2.start(st); o1.stop(st + n[2] + .1); o2.stop(st + n[2] + .1);
+      });
+    },
+    gunshot: function (ctx, m) {
+      var t = ctx.currentTime;
+      noiseBurst(ctx, m, t, .4, 1, 'lowpass', 4000, 400);
+      noiseBurst(ctx, m, t + .18, .3, .6, 'lowpass', 900, 300);   // эхо на том же контексте
+      tone(ctx, m, 'sine', 180, t, .2, 1, 40);
+    },
+    boom: function (ctx, m) {
+      var t = ctx.currentTime;
+      tone(ctx, m, 'sine', 120, t, .7, 1, 30);
+      noiseBurst(ctx, m, t, .5, .7, 'lowpass', 500);
+    },
+    laser: function (ctx, m) {
+      var t = ctx.currentTime;
+      [0, .13, .26].forEach(function (off, i) {
+        tone(ctx, m, 'sawtooth', 2000 - i * 200, t + off, .13, .55, 200);
+      });
+    },
+    ufo: function (ctx, m) {
+      var t = ctx.currentTime, dur = 1.6;
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      var lfo = ctx.createOscillator(), lg = ctx.createGain();
+      osc.type = 'sine'; lfo.type = 'sine';
+      lfo.frequency.value = 8; lg.gain.value = 500; osc.frequency.value = 800;
+      lfo.connect(lg); lg.connect(osc.frequency);
+      g.gain.setValueAtTime(.0001, t);
+      g.gain.linearRampToValueAtTime(.5, t + .1);
+      g.gain.setValueAtTime(.5, t + dur - .2);
+      g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+      osc.connect(g); g.connect(m);
+      osc.start(t); osc.stop(t + dur + .1);
+      lfo.start(t); lfo.stop(t + dur + .1);
+    },
+    sonar: function (ctx, m) {
+      var t = ctx.currentTime;
+      [0, .4, .9].forEach(function (off, i) {
+        tone(ctx, m, 'sine', 1400, t + off, .3, .6 - i * .15);
+      });
+    },
+    levelup: function (ctx, m) {
+      var t = ctx.currentTime;
+      [523, 659, 784, 1046].forEach(function (f, i) { tone(ctx, m, 'triangle', f, t + i * .08, 1.5, .5); });
+      tone(ctx, m, 'sine', 2093, t + .4, 1.2, .35);
+    }
+  };
+
+  function playFinishSound() {
+    var ctx = ac();
+    if (!ctx) return;
+    try {
+      var master = ctx.createGain();
+      master.gain.value = settings.volume;
+      master.connect(ctx.destination);
+      var fn = players[settings.melody] || players.classic;
+      fn(ctx, master);
+    } catch (e) {}
+  }
+
+  function playWarningSound() {
+    var ctx = ac();
+    if (!ctx) return;
+    try {
+      var m = ctx.createGain();
+      m.gain.value = settings.volume * .6;
+      m.connect(ctx.destination);
+      var t = ctx.currentTime;
+      tone(ctx, m, 'triangle', 660, t, .25, .5);
+      tone(ctx, m, 'triangle', 880, t + .15, .25, .5);
+    } catch (e) {}
+  }
+
+  /* ============================================================
+     ИМЯ КЛИЕНТА / ПЕРЕИМЕНОВАНИЕ
+     ============================================================ */
+  var editingId = null;
+  function openNameModal(id) {
+    editingId = id;
+    var input = document.getElementById('name-input');
+    input.value = timers[id].clientName || '';
+    document.getElementById('name-modal').classList.add('show');
+    setTimeout(function () { input.focus(); }, 80);
+  }
+  function closeNameModal() {
+    document.getElementById('name-modal').classList.remove('show');
+    editingId = null;
+  }
+  function saveName() {
+    if (!editingId) return;
+    timers[editingId].clientName = document.getElementById('name-input').value.trim();
+    refreshClient(editingId);
+    closeNameModal();
+    saveState();
+  }
+
+  var renamingId = null;
+  function openRenameModal(id) {
+    renamingId = id;
+    var input = document.getElementById('rename-input');
+    input.value = customNames[id] || timers[id].fallbackName;
+    document.getElementById('rename-modal').classList.add('show');
+    setTimeout(function () { input.focus(); input.select(); }, 80);
+  }
+  function closeRenameModal() {
+    document.getElementById('rename-modal').classList.remove('show');
+    renamingId = null;
+  }
+  function applyName(id) {
+    els[id].name.textContent = getDisplayName(id);
+  }
+  function saveRename() {
+    if (!renamingId) return;
+    var value = document.getElementById('rename-input').value.trim();
+    if (!value || value === timers[renamingId].fallbackName) delete customNames[renamingId];
+    else customNames[renamingId] = value;
+    writeJSON(STORE_NAMES, customNames);
+    applyName(renamingId);
+    closeRenameModal();
+    showToast('✏️ Название сохранено');
+  }
+  function resetRename() {
+    if (!renamingId) return;
+    delete customNames[renamingId];
+    writeJSON(STORE_NAMES, customNames);
+    applyName(renamingId);
+    closeRenameModal();
+    showToast('↺ Название сброшено');
+  }
+
+  /* ============================================================
+     ТЕМА / ПАНЕЛЬ / ЛЁГКИЙ РЕЖИМ
+     ============================================================ */
+  function applyTheme() {
+    var light = settings.theme === 'light';
+    document.body.classList.toggle('light', light);
+    document.getElementById('theme-btn').textContent = light ? '☀️' : '🌙';
+  }
+
+  function applyLite() {
+    document.body.classList.toggle('lite', settings.lite);
+    var btn = document.getElementById('lite-btn');
+    btn.classList.toggle('on', settings.lite);
+    btn.title = settings.lite ? 'Лёгкий режим включён' : 'Лёгкий режим выключен';
+    var sw = document.getElementById('lite-switch');
+    if (sw) sw.classList.toggle('on', settings.lite);
+    var info = document.getElementById('lite-info');
+    if (info) {
+      var mem = navigator.deviceMemory || '?';
+      var cores = navigator.hardwareConcurrency || '?';
+      info.textContent = 'Ядра: ' + cores + ' · Память: ' + mem + ' ГБ' +
+        (settings.lite ? ' — анимации отключены' : ' — анимации включены');
+    }
+    var dsw = document.getElementById('dim-switch');
+    if (dsw) dsw.classList.toggle('on', settings.dimIdle);
+    document.body.classList.toggle('idle-mode', settings.dimIdle);
+  }
+
+  /* ============================================================
+     ЗАСТАВКА
+     ============================================================ */
+  var idleTimer = null;
+  var saver = document.getElementById('screensaver');
+  var saverCount = null;
+
+  function updateScreensaver() {
+    var now = new Date();
+    document.getElementById('saver-clock').textContent =
+      (now.getHours() < 10 ? '0' : '') + now.getHours() + ':' + (now.getMinutes() < 10 ? '0' : '') + now.getMinutes();
+    var n = 0;
+    for (var id in timers) if (timers[id].running || timers[id].paused) n++;
+    if (n === saverCount) return;
+    saverCount = n;
+    document.getElementById('saver-info').innerHTML =
+      n === 0 ? 'Нет активных таймеров' : 'Активных таймеров: <strong>' + n + '</strong>';
+  }
+
+  function resetIdleTimer() {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (saver.classList.contains('show')) return;
+    idleTimer = setTimeout(showScreensaver, IDLE_TIMEOUT);
+  }
+  function showScreensaver() {
+    saver.classList.add('show');
+    updateScreensaver();
+  }
+  function hideScreensaver() {
+    saver.classList.remove('show');
+    resetIdleTimer();
+  }
+
+  /* ============================================================
+     СОБЫТИЯ
+     ============================================================ */
+  function bind(id, ev, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener(ev, fn);
+  }
+
+  /* Панель продления: открыта максимум одна, закрывается кликом вне неё */
+  function hideExtend(id) {
+    var e = els[id];
+    if (e) e.extendRow.classList.remove('show');
+    if (openExtendId === id) openExtendId = null;
+  }
+  function closeExtendRows(keepId) {
+    if (openExtendId && openExtendId !== keepId) hideExtend(openExtendId);
+  }
+
+  function onGlobalClick(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+
+    // клик вне открытой панели продления — закрыть её
+    if (openExtendId && !t.closest('.extend-row') && !t.closest('[data-extend]')) {
+      closeExtendRows(null);
+    }
+
+    var el;
+
+    if ((el = t.closest('[data-toggle-timer]'))) {
+      toggleTimer(el.dataset.toggleTimer);
+      return;
+    }
+    if ((el = t.closest('[data-client-id]'))) {
+      openNameModal(el.dataset.clientId);
+      return;
+    }
+    if ((el = t.closest('[data-rename-id]'))) {
+      openRenameModal(el.dataset.renameId);
+      return;
+    }
+    if (t.id === 'name-modal') { closeNameModal(); return; }
+    if (t.id === 'rename-modal') { closeRenameModal(); return; }
+
+    // ВАЖНО: closest, а не dataset — иначе клик по иконке внутри кнопки не срабатывал
+    if ((el = t.closest('[data-pause]'))) {
+      pauseTimer(el.dataset.pause);
+      return;
+    }
+    if ((el = t.closest('[data-play]'))) {
+      var pl = timers[el.dataset.play];
+      if (pl.paused && pl.remaining > 0) resumeTimer(el.dataset.play);
+      return;
+    }
+    if ((el = t.closest('[data-stop]'))) {
+      confirmStop(el.dataset.stop, el);
+      return;
+    }
+    if ((el = t.closest('[data-extend-id][data-min]'))) {
+      extendTimer(el.dataset.extendId, parseInt(el.dataset.min, 10));
+      return;
+    }
+    if ((el = t.closest('[data-extend]'))) {
+      var id = el.dataset.extend;
+      var row = els[id].extendRow;
+      if (row.classList.contains('show')) {
+        hideExtend(id);                     // тот же + повторно — закрыть
+      } else {
+        closeExtendRows(id);                // закрыть панель на другой карточке
+        row.classList.add('show');
+        openExtendId = id;
+      }
+      return;
+    }
+    if ((el = t.closest('[data-id][data-min]'))) {
+      startTimer(el.dataset.id, parseInt(el.dataset.min, 10));
+      return;
+    }
+  }
+
+  function confirmStop(id, btn) {
+    var t = timers[id];
+    if (!t.running && !t.finished && !t.paused) return;
+
+    if (pendingStop === id) { stopTimer(id); return; }
+
+    if (pendingStop) resetStopBtn(pendingStop);
+    pendingStop = id;
+    btn.textContent = 'Точно?';
+    btn.style.background = 'linear-gradient(135deg, #fbbf24, #f59e0b)';
+    btn.style.color = '#111';
+    if (stopResetTimer) clearTimeout(stopResetTimer);
+    stopResetTimer = setTimeout(function () { resetStopBtn(id); }, 2000);
+  }
+
+  function initEvents() {
+    document.addEventListener('click', onGlobalClick, false);
+
+    bind('name-save', 'click', saveName);
+    bind('name-cancel', 'click', closeNameModal);
+    bind('name-input', 'keydown', function (e) {
+      if (e.key === 'Enter') saveName();
+      if (e.key === 'Escape') closeNameModal();
+    });
+
+    bind('rename-save', 'click', saveRename);
+    bind('rename-reset', 'click', resetRename);
+    bind('rename-cancel', 'click', closeRenameModal);
+    bind('rename-input', 'keydown', function (e) {
+      if (e.key === 'Enter') saveRename();
+      if (e.key === 'Escape') closeRenameModal();
+    });
+
+    bind('theme-btn', 'click', function () {
+      settings.theme = settings.theme === 'light' ? 'dark' : 'light';
+      applyTheme();
+      saveSettings();
+    });
+
+    var panel = document.getElementById('sound-panel');
+    bind('sound-btn', 'click', function (e) {
+      e.stopPropagation();
+      panel.classList.toggle('show');
+      if (panel.classList.contains('show')) ac();   // разблокируем звук жестом
+    });
+    document.addEventListener('click', function (e) {
+      if (!panel.contains(e.target) && e.target.id !== 'sound-btn' && !e.target.closest('#sound-btn')) {
+        panel.classList.remove('show');
+      }
+    }, false);
+
+    var slider = document.getElementById('volume-slider');
+    var volDisp = document.getElementById('vol-display');
+    slider.value = Math.round(settings.volume * 100);
+    volDisp.textContent = Math.round(settings.volume * 100) + '%';
+    slider.addEventListener('input', function () {
+      settings.volume = this.value / 100;
+      volDisp.textContent = this.value + '%';
+      saveSettings();
+    });
+
+    var melodyBtns = document.querySelectorAll('#melody-grid button');
+    for (var i = 0; i < melodyBtns.length; i++) {
+      (function (b) {
+        b.classList.toggle('selected', b.dataset.melody === settings.melody);
+        b.addEventListener('click', function () {
+          settings.melody = b.dataset.melody;
+          for (var k = 0; k < melodyBtns.length; k++) melodyBtns[k].classList.remove('selected');
+          b.classList.add('selected');
+          saveSettings();
+          playFinishSound();
+        });
+      })(melodyBtns[i]);
+    }
+
+    function toggleLite() {
+      settings.lite = !settings.lite;
+      applyLite();
+      saveSettings();
+      showToast(settings.lite ? '⚡ Лёгкий режим включён' : '✨ Полная анимация');
+    }
+    bind('lite-btn', 'click', toggleLite);
+    bind('lite-switch', 'click', toggleLite);
+
+    bind('dim-switch', 'click', function () {
+      settings.dimIdle = !settings.dimIdle;
+      applyLite();
+      saveSettings();
+    });
+
+    bind('fullscreen-btn', 'click', function () {
+      if (!document.fullscreenElement) {
+        var r = document.documentElement.requestFullscreen();
+        if (r && r.catch) r.catch(function () {});
+      } else document.exitFullscreen();
+    });
+
+    ['click', 'touchstart', 'keydown'].forEach(function (evt) {
+      document.addEventListener(evt, resetIdleTimer, { passive: true });
+    });
+    saver.addEventListener('click', hideScreensaver);
+    saver.addEventListener('touchstart', hideScreensaver, { passive: true });
+    setInterval(function () {
+      if (document.hidden) return;
+      if (saver.classList.contains('show')) updateScreensaver();
+    }, 1000);
+
+    // Фон: не тикаем вхолостую и не пишем в localStorage
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        saveState(true);
+      } else if (ticker) {
+        lastTickAt = Date.now();   // сбросить накопленный лаг
+      }
+    });
+
+    window.addEventListener('beforeunload', function () { saveState(true); });
+    window.addEventListener('pagehide', function () { saveState(true); });
+
+    // PWA
+    var installBtn = document.getElementById('install-btn');
+    var deferred = null;
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      deferred = e;
+      installBtn.style.display = 'flex';
+    });
+    installBtn.addEventListener('click', function () {
+      if (!deferred) return;
+      deferred.prompt();
+      deferred.userChoice.then(function (r) {
+        if (r.outcome === 'accepted') showToast('✅ Приложение установлено');
+      });
+      deferred = null;
+      installBtn.style.display = 'none';
+    });
+    window.addEventListener('appinstalled', function () {
+      showToast('✅ Приложение установлено');
+      installBtn.style.display = 'none';
+    });
+  }
+
+  /* ============================================================
+     СТАРТ
+     ============================================================ */
+  function init() {
+    customNames = readJSON(STORE_NAMES, {}) || {};
+    loadSettings();
+
+    buildUI();
+    applyTheme();
+    applyLite();
+    initEvents();
+
+    var restored = loadState();
+    for (var id in timers) {
+      refreshClient(id);
+      syncState(id);
+      syncTime(id, false);
+    }
+    updateRowProgress(true);
+    updateTitleBadge();
+    resetIdleTimer();
+
+    if (restored) {
+      var anyRunning = false;
+      for (var k in timers) if (timers[k].running) { anyRunning = true; break; }
+      if (anyRunning) startTicker();
+      setTimeout(function () { showToast('🔄 Состояние восстановлено'); }, 500);
+    }
+
+    if (settings.lite && autoDetectLite()) {
+      setTimeout(function () { showToast('⚡ Лёгкий режим — нажмите ⚡ чтобы отключить'); }, 1800);
+    }
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function () {});
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+</body>
+</html>

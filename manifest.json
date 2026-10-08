@@ -1,0 +1,19 @@
+{
+  "name": "Таймеры услуг",
+  "short_name": "Таймеры",
+  "description": "Таймеры для VR, ПК, PS и симуляторов",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a1f",
+  "theme_color": "#0a0a1f",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
